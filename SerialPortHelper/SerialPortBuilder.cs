@@ -29,8 +29,14 @@ public sealed class SerialPortConfiguration {
     internal TimeSpan TriggerDelay { get; private set; } = TimeSpan.FromSeconds(2);
     internal int DefaultBaudRate { get; private set; } = 115200;
     internal int[] BaudRatesToTest { get; private set; } = Array.Empty<int>();
+    internal Func<string, bool>? FilterCondition { get; private set; }
 
     public IReadOnlyList<SerialPortIdentifier> Identifiers => _identifiers;
+
+    public SerialPortConfiguration Filter(Func<string, bool> filter) {
+        FilterCondition = filter;
+        return this;
+    }
 
     public SerialPortConfiguration WithDefaultBaudRate(int baudRate) {
         DefaultBaudRate = baudRate;

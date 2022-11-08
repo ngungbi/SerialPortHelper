@@ -1,4 +1,5 @@
 ﻿using System.IO.Ports;
+using Microsoft.Extensions.Logging;
 #if DEBUG
 using System.Diagnostics;
 #endif
@@ -14,14 +15,25 @@ public sealed class SerialPortProvider : ISerialPortProvider, IDisposable {
     private CancellationTokenSource _cts = new();
     private readonly TaskCompletionSource _tcs = new();
     private readonly Queue<int> _baudrates = new();
+    private readonly ILogger<SerialPortProvider> _logger;
 
-    public SerialPortProvider(SerialPortConfiguration configuration) {
+    public SerialPortProvider(SerialPortConfiguration configuration, ILogger<SerialPortProvider> logger) {
+        _logger = logger;
         _configuration = configuration;
-        foreach (int b in configuration.BaudRatesToTest) {
-            _baudrates.Enqueue(b);
+
+        if (configuration.BaudRatesToTest.Length > 0) {
+            foreach (int b in configuration.BaudRatesToTest) {
+                _baudrates.Enqueue(b);
+            }
         }
 
-        var portList = SerialPort.GetPortNames();
+        var filter = configuration.FilterCondition;
+        var portList = filter is null
+            ? SerialPort.GetPortNames().ToList()
+            : SerialPort.GetPortNames().Where(filter).ToList();
+
+        _logger.LogInformation("Found serial ports {PortList}", string.Join(", ", portList));
+
         foreach (string portName in portList) {
             var port = new SerialPort(portName, configuration.DefaultBaudRate);
             // try {
@@ -41,8 +53,16 @@ public sealed class SerialPortProvider : ISerialPortProvider, IDisposable {
             // }
         }
 
+        if (_availablePorts.Count < configuration.Identifiers.Count) {
+            _logger.LogWarning("Number of available ports is less than identifiers");
+        }
+
         foreach (var port in _availablePorts) {
-            port.Open();
+            try {
+                port.Open();
+            } catch (IOException e) {
+                _logger.LogError(e, "Failed to open {Port}", port.PortName);
+            }
         }
 
         Task.Delay(_configuration.TriggerDelay).ContinueWith(_ => RunTrigger());
@@ -95,17 +115,25 @@ public sealed class SerialPortProvider : ISerialPortProvider, IDisposable {
 
     private void DataReceived(object sender, SerialDataReceivedEventArgs e) {
         var port = (SerialPort) sender;
-        // while (obj.BytesToRead > 0) {
-        //     var line = obj.ReadLine();
+        Thread.Sleep(1);
+
+        // var name = port.PortName;
+        var buffer = new List<string>();
+        while (port.BytesToRead > 0) {
+            var line = port.ReadLine();
+            buffer.Add(line);
+        }
+
         foreach (var identifier in _configuration.Identifiers) {
             if (identifier.IsIdentified) continue;
 
-            var reader = new SerialPortReader(port);
+            var reader = new SerialPortReader(port, buffer);
             var writer = new SerialPortWriter(port);
             if (!identifier.Identifier(reader, writer)) continue;
 
             // obj.Close();
-            _portMap.Add(identifier.Name, port);
+            _portMap[identifier.Name] = port;
+            // _portMap.Add(identifier.Name, port);
             identifier.IsIdentified = true;
             port.DataReceived -= DataReceived;
 
@@ -115,7 +143,8 @@ public sealed class SerialPortProvider : ISerialPortProvider, IDisposable {
 
             return;
         }
-        // }
+
+        buffer.Clear();
     }
 
 #if DEBUG
@@ -134,11 +163,16 @@ public sealed class SerialPortProvider : ISerialPortProvider, IDisposable {
         } catch (TaskCanceledException) { }
     }
 
-    public Task WaitAsync() {
-        return _tcs.Task;
-    }
+    public Task WaitAsync() => _tcs.Task;
 
     private void CloseUnusedPorts() {
+        if (_cts.Token.IsCancellationRequested) {
+            _logger.LogWarning("Timeout while identifying ports");
+        }
+
+        if (_portMap.Count == _configuration.Identifiers.Count) {
+            _logger.LogInformation("All ports have been identified");
+        }
 #if DEBUG
         Console.WriteLine("Closing ports...");
 #endif
@@ -161,9 +195,7 @@ public sealed class SerialPortProvider : ISerialPortProvider, IDisposable {
 #endif
     }
 
-    public SerialPort GetPort(string name) {
-        return _portMap[name];
-    }
+    public SerialPort GetPort(string name) => _portMap[name];
 
     public SerialPort GetPort<T>() {
         var name = typeof(T).FullName!;

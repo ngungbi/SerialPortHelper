@@ -13,7 +13,7 @@ public class Tests {
         configure.AddPort<Tests>(EncoderIdentifier);
         configure.AddPort("Grbl", GrblIdentifier, GrblTrigger);
         configure.SetTimeout(TimeSpan.FromSeconds(10)).SetTriggerDelay(2000);
-        _serialPortProvider = new SerialPortProvider(configure);
+        _serialPortProvider = new SerialPortProvider(configure, new Logger());
     }
 
     private static bool EncoderIdentifier(SerialPortReader reader, SerialPortWriter writer) {
